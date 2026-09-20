@@ -7,6 +7,8 @@
 // itself happens in pair-accept.js, invoked by sshd as the forced command.
 
 import os from "node:os";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { emitKeypressEvents } from "node:readline";
 import QRCode from "qrcode";
 
@@ -39,6 +41,33 @@ import {
 } from "./pair-fatal.js";
 
 const DEFAULT_SSH_PORT = 22;
+
+// The Pairing Code carries the port the app should dial. It is not always 22:
+// on a host running Tailscale SSH, tailscaled intercepts 22 over the tailnet
+// and neither honors the bootstrap key's forced command nor presents OpenSSH's
+// host key, so the ceremony has to target a plain OpenSSH listener on another
+// port. HEELER_SSH_PORT selects it; anything invalid falls back to 22.
+function validPort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function configuredSshPort(env = process.env) {
+  const fromEnv = validPort(env.HEELER_SSH_PORT);
+  if (fromEnv !== null) return fromEnv;
+
+  const configDir = env.HERDR_PLUGIN_CONFIG_DIR;
+  if (configDir) {
+    try {
+      const raw = readFileSync(join(configDir, "pairing.json"), "utf8");
+      const fromFile = validPort(JSON.parse(raw).sshPort);
+      if (fromFile !== null) return fromFile;
+    } catch {
+      // No config file, unreadable, or malformed -- fall through to the default.
+    }
+  }
+  return DEFAULT_SSH_PORT;
+}
 // How often the QR screen checks whether Enrollment has completed. The pending
 // -> enrolled transition happens on the server side in pair-accept.js; polling
 // the record it leaves is simpler than an fs.watch and just as timely at human
@@ -362,7 +391,7 @@ async function main() {
     }, PAIRING_TTL_SECONDS * 1000);
     lastPayload = {
       addresses: confirmedAddresses,
-      port: DEFAULT_SSH_PORT,
+      port: configuredSshPort(),
       username: os.userInfo().username,
       hostKeyFingerprint: hostKey.fingerprint,
       bootstrapSeed: session.seed,
